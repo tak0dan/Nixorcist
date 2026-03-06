@@ -1,4 +1,3 @@
-````markdown
 # 🧙 Nixorcist
 
 **Nixorcist** is a modular package orchestration system for **NixOS** that manages packages through generated modules instead of manually editing `environment.systemPackages`.
