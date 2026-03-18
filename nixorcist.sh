@@ -32,7 +32,7 @@ enable_nixorcist_trace
 trap 'status=$?; nixorcist_trace "EXIT" "main status=$status"' EXIT
 
 main() {
-  local command="${1:-tui}"
+  local command="${1:-help}"
   nixorcist_trace "ARGS" "argv=$*"
 
   case "$command" in
@@ -121,9 +121,6 @@ main() {
       regenerate_hub && \
       run_rebuild && \
       show_success "Full pipeline completed"
-      ;;
-    tui)
-      main_menu
       ;;
     help|-h|--help)
       show_logo

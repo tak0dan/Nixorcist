@@ -1,5 +1,4 @@
 adw-bluetooth
-bat
 blueman
 discover-overlay
 docker
@@ -18,15 +17,12 @@ flatpak
 gtk-pipe-viewer
 krita
 libsForQt5.qtmultimedia
+nano
 nodejs
-perl5Packages.PlackMiddlewareFixMissingBodyInRedirect
 pnpm
+python
 python3
-python313Packages.ifconfig-parser
-python313Packages.pip
-python314Packages.ifconfig-parser
 steam
 swww
-unixtools.ifconfig
 wallust
 #$built$#

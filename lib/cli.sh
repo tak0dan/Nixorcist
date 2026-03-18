@@ -379,525 +379,334 @@ show_menu() {
   echo
 }
 
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# TUI Core — nmtui-style arrow-key navigation
-# ═══════════════════════════════════════════════════════════════════════════════
-
-declare -ga _TUI_ITEMS=()
-declare -ga _TUI_SEPS=()    # "1" = unselectable separator row
-declare -ga _TUI_STATES=()  # checklist states: keep | add | remove | undo_add
-declare -gi _TUI_CUR=0
-declare -gi _TUI_OFFSET=0
-
-# Print transaction status bar (requires TX_LOCK / TX_ADD / TX_REMOVE globals)
-_tui_status_bar() {
-  local lock_n add_n rem_n
-  lock_n="${#TX_LOCK[@]}"
-  add_n="${#TX_ADD[@]}"
-  rem_n="${#TX_REMOVE[@]}"
-  printf '  Lock: %d packages' "$lock_n"
-  (( add_n > 0 )) && printf '  \033[1;32m  +%d to install\033[0m' "$add_n"
-  (( rem_n > 0 )) && printf '  \033[1;31m  -%d to remove\033[0m'  "$rem_n"
-  (( add_n == 0 && rem_n == 0 )) && printf '  \033[2m  no pending changes\033[0m'
-  echo
+main_menu() {
+  while true; do
+    clear_screen
+    show_logo
+    show_section_header 'Main Menu'
+    
+    printf '  Manage your NixOS packages interactively.\n'
+    printf '  Choose an option below to get started.\n'
+    echo
+    show_refresh_health_panel
+    
+    show_menu_item '1' 'Transaction Builder - Add/Remove packages interactively'
+    show_menu_item '2' 'Import from File     - Import packages from a text file'
+    show_menu_item '3' 'Direct Commands      - Quick commands and utilities'
+    show_menu_item '4' 'View Status          - Show current lock file state'
+    show_menu_item '5' 'Settings             - Configuration options'
+    echo
+    show_menu_item '0' 'Exit nixorcist'
+    echo
+    
+    printf '  Select an option (0-5): '
+    read -r choice
+    nixorcist_trace_selection "main_menu.choice" "$choice"
+    
+    case "$choice" in
+      1) transaction_builder_flow ;;
+      2) import_file_flow ;;
+      3) direct_commands_menu ;;
+      4) view_status_screen ;;
+      5) settings_menu ;;
+      0)
+        clear_screen
+        show_success 'Exiting nixorcist'
+        exit 0
+        ;;
+      *)
+        show_error 'Invalid option. Please choose a number between 0 and 5.'
+        wait_for_key
+        ;;
+    esac
+  done
 }
 
-# Normalise a raw keypress into a token: UP DOWN PGUP PGDN ENTER SPACE ESC IGNORE
-_tui_read_key() {
-  local k1 k2
-  IFS= read -rsn1 k1
-  if [[ "$k1" == $'\033' ]]; then
-    IFS= read -rsn2 -t 0.1 k2 || k2=""
-    case "$k2" in
-      '[A') printf 'UP'   ; return ;;
-      '[B') printf 'DOWN' ; return ;;
-      '[5') printf 'PGUP' ; return ;;
-      '[6') printf 'PGDN' ; return ;;
-      '')   printf 'ESC'  ; return ;;
-      *)    printf 'IGNORE'; return ;;
+transaction_builder_flow() {
+  clear_screen
+  show_logo
+  show_section_header 'Transaction Builder'
+  
+  printf '  Stage packages for installation and removal.\n'
+  printf '  Use this to carefully plan your system changes.\n'
+  echo
+  
+  if run_transaction_cli; then
+    clear_screen
+    show_logo
+    show_section_header 'Transaction Applied'
+    
+    printf '  Your transaction has been staged successfully.\n'
+    echo
+    show_menu_item '1' 'Rebuild NixOS now    - Apply changes immediately'
+    show_menu_item '2' 'Rebuild later        - Apply changes manually later'
+    show_menu_item '0' 'Back to Main Menu'
+    echo
+    
+    printf '  Select an option (0-2): '
+    read -r choice
+    nixorcist_trace_selection "transaction_builder_flow.choice" "$choice"
+    
+    case "$choice" in
+      1)
+        clear_screen
+        show_logo
+        show_section_header 'NixOS Rebuild'
+        printf '  Building your system with the staged changes...\n\n'
+        run_rebuild || show_error 'Rebuild failed. Check logs for details.'
+        wait_for_key
+        ;;
+      2)
+        show_success 'Transaction saved. Run nixorcist rebuild when ready.'
+        wait_for_key
+        ;;
+      0) ;;
+      *)
+        show_error 'Invalid option.'
+        wait_for_key
+        ;;
     esac
   fi
-  case "$k1" in
-    $'\n'|'') printf 'ENTER' ;;
-    ' ')      printf 'SPACE' ;;
-    'k')      printf 'UP'    ;;
-    'j')      printf 'DOWN'  ;;
-    'q'|'Q')  printf 'ESC'   ;;
-    *)        printf 'IGNORE' ;;
+}
+
+import_file_flow() {
+  clear_screen
+  show_logo
+  show_section_header 'Import from File'
+  
+  printf '  Import packages from a text file.\n'
+  printf '  Supported formats: comma or newline separated package names.\n'
+  printf '  You can use +/- prefixes to specify add/remove operations.\n'
+  echo
+  
+  show_input_prompt 'Enter file path'
+  read -r file_path
+  nixorcist_trace_selection "import_file_flow.file_path" "$file_path"
+  
+  if [[ -z "$file_path" ]]; then
+    show_error 'File path cannot be empty.'
+    wait_for_key
+    return
+  fi
+  
+  if [[ ! -f "$file_path" ]]; then
+    show_error "File not found: $file_path"
+    wait_for_key
+    return
+  fi
+  
+  clear_screen
+  show_logo
+  show_section_header 'Importing Packages'
+  printf '  Processing file: %s\n\n' "$file_path"
+  
+  if import_from_file "$file_path"; then
+    show_success 'File import completed successfully.'
+  else
+    show_error 'File import was cancelled.'
+  fi
+  
+  wait_for_key
+}
+
+direct_commands_menu() {
+  while true; do
+    clear_screen
+    show_logo
+    show_section_header 'Direct Commands'
+    
+    printf '  Quick access to common nixorcist operations.\n'
+    echo
+    show_refresh_health_panel
+    
+    show_menu_item '1' 'Generate Modules     - Generate from current lock'
+    show_menu_item '2' 'Rebuild Hub          - Regenerate all-packages.nix'
+    show_menu_item '3' 'Full Rebuild         - gen → hub → nixos-rebuild'
+    show_menu_item '4' 'Purge All Modules    - Remove all generated modules'
+    show_menu_item '5' 'Build NixOS Index    - Refresh package database'
+    show_menu_item '6' 'All + Refresh        - refresh index, then full rebuild'
+    echo
+    show_menu_item '0' 'Back to Main Menu'
+    echo
+    
+    printf '  Select an option (0-6): '
+    read -r choice
+    
+    case "$choice" in
+      1)
+        clear_screen
+        show_logo
+        show_section_header 'Generate Modules'
+        printf '  Generating Nix modules from lock file...\n\n'
+        generate_modules
+        wait_for_key
+        ;;
+      2)
+        clear_screen
+        show_logo
+        show_section_header 'Rebuild Hub'
+        printf '  Regenerating hub configuration...\n\n'
+        regenerate_hub
+        wait_for_key
+        ;;
+      3)
+        clear_screen
+        show_logo
+        show_section_header 'Full Rebuild'
+        printf '  Running complete pipeline...\n\n'
+        generate_modules && regenerate_hub && run_rebuild
+        wait_for_key
+        ;;
+      4)
+        clear_screen
+        show_logo
+        show_section_header 'Purge All Modules'
+        
+        show_warning 'This will remove ALL generated modules and clear the lock file.'
+        show_yes_no_prompt 'Are you sure?'
+        read -r confirm
+        
+        if [[ "${confirm,,}" == "y" ]]; then
+          purge_all_modules
+          show_success 'All modules purged and lock cleared.'
+        else
+          show_info 'Purge cancelled.'
+        fi
+        
+        wait_for_key
+        ;;
+      5)
+        clear_screen
+        show_logo
+        show_section_header 'Building Package Index'
+        printf '  This may take a moment...\n\n'
+        build_nix_index
+        show_success 'Package index built successfully.'
+        wait_for_key
+        ;;
+      6)
+        clear_screen
+        show_logo
+        show_section_header 'Full Build with Refresh'
+        printf '  Refreshing package index, then running full pipeline...\n\n'
+        index_mark_all_executed
+        build_nix_index && generate_modules && regenerate_hub && run_rebuild
+        show_success 'Full build with refresh completed.'
+        wait_for_key
+        ;;
+      0) break ;;
+      *)
+        show_error 'Invalid option. Please choose a number between 0 and 6.'
+        wait_for_key
+        ;;
+    esac
+  done
+}
+
+view_status_screen() {
+  clear_screen
+  show_logo
+  show_section_header 'Current Status'
+  
+  local lock_count=0
+  local module_count=0
+  
+  if [[ -f "$LOCK_FILE" ]]; then
+    lock_count=$(grep -v -F "$BUILT_MARKER" "$LOCK_FILE" 2>/dev/null | sed '/^[[:space:]]*$/d' | wc -l)
+  fi
+  
+  if [[ -d "$MODULES_DIR" ]]; then
+    module_count=$(find "$MODULES_DIR" -name '*.nix' -type f 2>/dev/null | wc -l)
+  fi
+  
+  printf '  Lock File Status:\n'
+  show_status_line 'Packages in lock' "$lock_count"
+  show_status_line 'Generated modules' "$module_count"
+  echo
+  show_refresh_health_panel
+  
+  printf '  File Locations:\n'
+  show_status_line 'Lock file' "$LOCK_FILE"
+  show_status_line 'Modules directory' "$MODULES_DIR"
+  show_status_line 'Index metadata' "$INDEX_STATUS_FILE"
+  echo
+  
+  show_menu_item '1' 'View package list    - Show all packages in lock'
+  show_menu_item '0' 'Back to Main Menu'
+  echo
+  
+  printf '  Select an option (0-1): '
+  read -r choice
+  
+  case "$choice" in
+    1)
+      clear_screen
+      show_logo
+      show_section_header 'Packages in Lock File'
+      echo
+      
+      if [[ -f "$LOCK_FILE" ]]; then
+        grep -v -F "$BUILT_MARKER" "$LOCK_FILE" 2>/dev/null | sed '/^[[:space:]]*$/d' | nl | while read -r num pkg; do
+          printf '  %3d. %s\n' "$num" "$pkg"
+        done | head -30
+        
+        local total=$(grep -v -F "$BUILT_MARKER" "$LOCK_FILE" 2>/dev/null | sed '/^[[:space:]]*$/d' | wc -l)
+        if [[ $total -gt 30 ]]; then
+          printf '\n  ... and %d more packages\n' $((total - 30))
+        fi
+      else
+        printf '  (Lock file is empty)\n'
+      fi
+      
+      wait_for_key
+      ;;
+    0) ;;
+    *)
+      show_error 'Invalid option.'
+      wait_for_key
+      ;;
   esac
 }
 
-# Find the next non-separator item in _TUI_ITEMS/_TUI_SEPS from $1 going in direction $2.
-_tui_next_nonsep() {
-  local idx="$1" dir="$2"
-  local count=${#_TUI_ITEMS[@]}
-  local i=$idx
+settings_menu() {
   while true; do
-    i=$(( i + dir ))
-    (( i < 0 ))       && i=0             && break
-    (( i >= count ))  && i=$(( count-1 )) && break
-    [[ "${_TUI_SEPS[$i]:-0}" != "1" ]] && break
-  done
-  printf '%d' "$i"
-}
-
-# ─── Arrow-key menu ───────────────────────────────────────────────────────────
-# Uses _TUI_ITEMS, _TUI_SEPS, _TUI_CUR globals.
-# $1 = title string displayed as section header.
-# Returns 0 on Enter (selection in _TUI_CUR), 1 on Esc/q.
-_tui_menu() {
-  local title="$1"
-  local count=${#_TUI_ITEMS[@]}
-  local key
-
-  tput civis 2>/dev/null || true
-
-  while true; do
-    clear
+    clear_screen
     show_logo
-    show_section_header "$title"
-    _tui_status_bar
+    show_section_header 'Settings'
+    
+    printf '  Configuration options for nixorcist.\n'
     echo
-
-    local i
-    for (( i=0; i<count; i++ )); do
-      if [[ "${_TUI_SEPS[$i]:-0}" == "1" ]]; then
-        printf '  \033[2m──────────────────────────────────────────────\033[0m\n'
-      elif [[ $i -eq $_TUI_CUR ]]; then
-        printf '  \033[1;7m  %-48s  \033[0m\n' "${_TUI_ITEMS[$i]}"
-      else
-        printf '      %-48s\n' "${_TUI_ITEMS[$i]}"
-      fi
-    done
-
+    
+    show_menu_item '1' 'Auto-rebuild after transaction - Toggle'
+    show_menu_item '2' 'Verbose output                 - Toggle'
+    show_menu_item '3' 'Reset to defaults              - Restore defaults'
     echo
-    printf '  \033[2m↑/↓ or j/k: navigate   Enter: select   Esc/q: exit\033[0m\n'
-
-    key="$(_tui_read_key)"
-    case "$key" in
-      UP)    _TUI_CUR="$(_tui_next_nonsep "$_TUI_CUR" -1)" ;;
-      DOWN)  _TUI_CUR="$(_tui_next_nonsep "$_TUI_CUR" 1)"  ;;
-      ENTER) tput cnorm 2>/dev/null || true; return 0 ;;
-      ESC)   tput cnorm 2>/dev/null || true; return 1 ;;
+    show_menu_item '0' 'Back to Main Menu'
+    echo
+    
+    printf '  Select an option (0-3): '
+    read -r choice
+    
+    case "$choice" in
+      1)
+        show_info 'Auto-rebuild toggle not yet implemented.'
+        wait_for_key
+        ;;
+      2)
+        show_info 'Verbose output toggle not yet implemented.'
+        wait_for_key
+        ;;
+      3)
+        show_warning 'Resetting to defaults...'
+        show_success 'Settings reset to defaults.'
+        sleep 1
+        ;;
+      0) break ;;
+      *)
+        show_error 'Invalid option. Please choose a number between 0 and 3.'
+        wait_for_key
+        ;;
     esac
   done
 }
 
-# ─── Arrow-key checklist ──────────────────────────────────────────────────────
-# Uses _TUI_ITEMS, _TUI_STATES, _TUI_CUR, _TUI_OFFSET globals.
-# $1 = title    $2 = footer hint (optional)
-# States: keep | add | remove | undo_add
-# Space toggles keep↔remove and add↔undo_add.
-# Returns 0 on Enter (caller reads _TUI_STATES), 1 on Esc (discard).
-_tui_checklist() {
-  local title="$1"
-  local footer="${2:-  \033[2m↑/↓ navigate   Space: toggle   PgUp/PgDn: scroll   Enter: apply   Esc: back\033[0m}"
-  local count=${#_TUI_ITEMS[@]}
-  local key rows vp
-
-  tput civis 2>/dev/null || true
-
-  while true; do
-    rows="$(tput lines 2>/dev/null || echo 24)"
-    vp=$(( rows - 11 ))
-    (( vp < 5 )) && vp=5
-
-    # Keep cursor inside viewport
-    (( _TUI_CUR < _TUI_OFFSET )) && _TUI_OFFSET=$_TUI_CUR
-    (( _TUI_CUR >= _TUI_OFFSET + vp )) && _TUI_OFFSET=$(( _TUI_CUR - vp + 1 ))
-
-    clear
-    show_logo
-    show_section_header "$title"
-    printf '%b\n' "$footer"
-    echo
-
-    local i state marker color end
-    end=$(( _TUI_OFFSET + vp ))
-    (( end > count )) && end=$count
-
-    for (( i=_TUI_OFFSET; i<end; i++ )); do
-      state="${_TUI_STATES[$i]:-keep}"
-      case "$state" in
-        add)      marker="[+]"; color='\033[1;32m' ;;
-        remove)   marker="[-]"; color='\033[1;31m' ;;
-        undo_add) marker="[ ]"; color='\033[2m'    ;;
-        *)        marker="[ ]"; color=''            ;;
-      esac
-
-      if [[ $i -eq $_TUI_CUR ]]; then
-        printf "  \033[7m${color}%s %-46s\033[0m\n" "$marker" "${_TUI_ITEMS[$i]}"
-      else
-        printf "  ${color}%s\033[0m %-46s\n" "$marker" "${_TUI_ITEMS[$i]}"
-      fi
-    done
-
-    if (( count > vp )); then
-      echo
-      printf '  \033[2m(%d – %d of %d)\033[0m\n' "$(( _TUI_OFFSET+1 ))" "$end" "$count"
-    fi
-
-    key="$(_tui_read_key)"
-    case "$key" in
-      UP)
-        (( _TUI_CUR > 0 )) && (( _TUI_CUR-- ))
-        ;;
-      DOWN)
-        (( _TUI_CUR < count-1 )) && (( _TUI_CUR++ ))
-        ;;
-      PGUP)
-        (( _TUI_CUR -= vp ))
-        (( _TUI_CUR < 0 )) && _TUI_CUR=0
-        ;;
-      PGDN)
-        (( _TUI_CUR += vp ))
-        (( _TUI_CUR >= count )) && _TUI_CUR=$(( count-1 ))
-        ;;
-      SPACE)
-        state="${_TUI_STATES[$_TUI_CUR]:-keep}"
-        case "$state" in
-          keep)     _TUI_STATES[$_TUI_CUR]="remove"   ;;
-          remove)   _TUI_STATES[$_TUI_CUR]="keep"     ;;
-          add)      _TUI_STATES[$_TUI_CUR]="undo_add" ;;
-          undo_add) _TUI_STATES[$_TUI_CUR]="add"      ;;
-        esac
-        ;;
-      ENTER) tput cnorm 2>/dev/null || true; return 0 ;;
-      ESC)   tput cnorm 2>/dev/null || true; return 1 ;;
-    esac
-  done
-}
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# TUI Flow Handlers — one per main-menu action
-# ═══════════════════════════════════════════════════════════════════════════════
-
-_tui_flow_install() {
-  clear; show_logo; show_section_header "Install Packages"
-  _tui_status_bar; echo
-  printf '  Search and select packages (TAB = multi-select, Enter = confirm).\n\n'
-
-  local selected pkg added=0
-  selected="$(transaction_pick_from_index 2>/dev/null || true)"
-  [[ -z "$selected" ]] && { tput cnorm 2>/dev/null || true; return 0; }
-
-  tput cnorm 2>/dev/null || true
-
-  while IFS= read -r pkg; do
-    [[ -z "$pkg" ]] && continue
-    local -A _resolved=()
-    transaction_resolve_token_for_query "$pkg" _resolved 2>/dev/null || {
-      TX_ADD["$pkg"]=1
-      unset "TX_REMOVE[$pkg]" 2>/dev/null || true
-      (( added++ ))
-      continue
-    }
-    if [[ ${#_resolved[@]} -gt 0 ]]; then
-      local r
-      for r in "${!_resolved[@]}"; do
-        TX_ADD["$r"]=1
-        unset "TX_REMOVE[$r]" 2>/dev/null || true
-        (( added++ ))
-      done
-    else
-      TX_ADD["$pkg"]=1
-      unset "TX_REMOVE[$pkg]" 2>/dev/null || true
-      (( added++ ))
-    fi
-  done <<< "$selected"
-
-  show_success "Queued $added package(s) to install."
-  sleep 1
-}
-
-_tui_flow_remove() {
-  # Build combined list: TX_LOCK + TX_ADD (deduplicated, sorted)
-  local -A _seen=()
-  local -a pkg_list=()
-  local pkg
-
-  for pkg in "${!TX_LOCK[@]}" "${!TX_ADD[@]}"; do
-    [[ -v _seen[$pkg] ]] && continue
-    _seen[$pkg]=1
-    pkg_list+=("$pkg")
-  done
-
-  if [[ ${#pkg_list[@]} -eq 0 ]]; then
-    clear; show_logo; show_section_header "Remove Packages"
-    show_info "Lock file is empty — nothing to remove."
-    wait_for_key; return
-  fi
-
-  local -a sorted=()
-  mapfile -t sorted < <(printf '%s\n' "${pkg_list[@]}" | sort)
-
-  _TUI_ITEMS=(); _TUI_STATES=(); _TUI_CUR=0; _TUI_OFFSET=0
-  for pkg in "${sorted[@]}"; do
-    _TUI_ITEMS+=("$pkg")
-    if   [[ -v TX_REMOVE[$pkg] ]]; then _TUI_STATES+=("remove")
-    elif [[ -v TX_ADD[$pkg]    ]]; then _TUI_STATES+=("add")
-    else                                 _TUI_STATES+=("keep")
-    fi
-  done
-
-  _tui_checklist "Remove Packages  [ ] keep   [-] remove   [+] queued to install" \
-    "  \033[2m↑/↓ navigate   Space: toggle removal   Enter: apply   Esc: back (no changes)\033[0m" \
-    || return 0
-
-  # Apply selections back to TX_*
-  local i
-  for (( i=0; i<${#sorted[@]}; i++ )); do
-    pkg="${sorted[$i]}"
-    case "${_TUI_STATES[$i]}" in
-      remove)   TX_REMOVE["$pkg"]=1; unset "TX_ADD[$pkg]" 2>/dev/null || true ;;
-      keep)     unset "TX_REMOVE[$pkg]" 2>/dev/null || true ;;
-      add)      TX_ADD["$pkg"]=1;    unset "TX_REMOVE[$pkg]" 2>/dev/null || true ;;
-      undo_add) unset "TX_ADD[$pkg]" "TX_REMOVE[$pkg]" 2>/dev/null || true ;;
-    esac
-  done
-  show_success "Selection saved."
-  sleep 1
-}
-
-_tui_flow_chant() {
-  while true; do
-    clear; show_logo; show_section_header "Chant"
-    _tui_status_bar; echo
-    printf '  Enter mixed install/remove tokens.\n'
-    printf '  Examples:  \033[1m+bat +ripgrep -nano\033[0m   or just  \033[1mbat ripgrep\033[0m\n'
-    printf '  + or no prefix = install    - prefix = remove\n'
-    echo
-    show_input_prompt "Tokens (Enter to go back)"
-    local input; read -r input
-    [[ -z "$input" ]] && return
-
-    local token pkg added=0 removed=0
-    for token in $input; do
-      if [[ "$token" == -* ]]; then
-        pkg="${token#-}"; [[ -z "$pkg" ]] && continue
-        TX_REMOVE["$pkg"]=1; unset "TX_ADD[$pkg]" 2>/dev/null || true; (( removed++ ))
-      else
-        pkg="${token#+}"; [[ -z "$pkg" ]] && continue
-        TX_ADD["$pkg"]=1;    unset "TX_REMOVE[$pkg]" 2>/dev/null || true; (( added++ ))
-      fi
-    done
-    show_success "Chant applied: +${added} install  -${removed} remove."
-    sleep 1
-  done
-}
-
-_tui_flow_import() {
-  clear; show_logo; show_section_header "Import from File"
-  _tui_status_bar; echo
-  printf '  Enter path to a package list file.\n'
-  printf '  Formats: one per line, comma-separated, or with +/- prefixes.\n'
-  echo
-  show_input_prompt "File path (Enter to go back)"
-  local path; read -r path
-  [[ -z "$path" ]] && return
-
-  if [[ ! -f "$path" ]]; then
-    show_error "File not found: $path"
-    wait_for_key; return
-  fi
-
-  clear; show_logo; show_section_header "Importing"
-  printf '  Processing: %s\n\n' "$path"
-  import_from_file "$path" \
-    && show_success "Import complete." \
-    || show_error "Import failed or was cancelled."
-  wait_for_key
-}
-
-_tui_flow_review() {
-  # Build the complete picture: lock ∪ to-add ∪ to-remove (for display only)
-  local -A _all=()
-  local pkg
-  for pkg in "${!TX_LOCK[@]}" "${!TX_ADD[@]}" "${!TX_REMOVE[@]}"; do
-    _all[$pkg]=1
-  done
-
-  if [[ ${#_all[@]} -eq 0 ]]; then
-    clear; show_logo; show_section_header "Review Transaction"
-    show_info "Nothing staged yet. Use Install / Remove / Chant first."
-    wait_for_key; return
-  fi
-
-  local -a sorted=()
-  mapfile -t sorted < <(printf '%s\n' "${!_all[@]}" | sort)
-
-  _TUI_ITEMS=(); _TUI_STATES=(); _TUI_CUR=0; _TUI_OFFSET=0
-  for pkg in "${sorted[@]}"; do
-    _TUI_ITEMS+=("$pkg")
-    if   [[ -v TX_REMOVE[$pkg] ]]; then _TUI_STATES+=("remove")
-    elif [[ -v TX_ADD[$pkg]    ]]; then _TUI_STATES+=("add")
-    else                                 _TUI_STATES+=("keep")
-    fi
-  done
-
-  _tui_checklist \
-    "Review & Cast Chant   [+] install   [-] remove   [ ] keep" \
-    "  \033[2m↑/↓ navigate   Space: toggle   Enter: cast chant & rebuild   Esc: back\033[0m" \
-    || return 0
-
-  # Write user's final selections back into TX_*
-  local i
-  for (( i=0; i<${#sorted[@]}; i++ )); do
-    pkg="${sorted[$i]}"
-    case "${_TUI_STATES[$i]}" in
-      remove)   TX_REMOVE["$pkg"]=1; unset "TX_ADD[$pkg]" 2>/dev/null || true ;;
-      keep)     unset "TX_REMOVE[$pkg]" 2>/dev/null || true ;;
-      add)      TX_ADD["$pkg"]=1;    unset "TX_REMOVE[$pkg]" 2>/dev/null || true ;;
-      undo_add) unset "TX_ADD[$pkg]" "TX_REMOVE[$pkg]" 2>/dev/null || true ;;
-    esac
-  done
-
-  # Summary before final confirmation
-  clear; show_logo; show_section_header "Transaction Summary"
-  _tui_status_bar; echo
-
-  local add_n=${#TX_ADD[@]} rem_n=${#TX_REMOVE[@]}
-
-  if (( add_n == 0 && rem_n == 0 )); then
-    show_info "No pending changes — nothing to commit."
-    wait_for_key; return
-  fi
-
-  if (( add_n > 0 )); then
-    printf '  \033[1;32mTo install (%d):\033[0m\n' "$add_n"
-    printf '%s\n' "${!TX_ADD[@]}" | sort | while IFS= read -r p; do
-      printf '    \033[32m+ %s\033[0m\n' "$p"
-    done; echo
-  fi
-  if (( rem_n > 0 )); then
-    printf '  \033[1;31mTo remove (%d):\033[0m\n' "$rem_n"
-    printf '%s\n' "${!TX_REMOVE[@]}" | sort | while IFS= read -r p; do
-      printf '    \033[31m- %s\033[0m\n' "$p"
-    done; echo
-  fi
-
-  show_yes_no_prompt "Apply these changes and rebuild NixOS now?"
-  local confirm; read -r confirm
-  if [[ "${confirm,,}" != "y" ]]; then
-    show_info "Cancelled. Changes remain staged for this session."
-    wait_for_key; return
-  fi
-
-  clear; show_logo; show_section_header "Applying Transaction"
-  transaction_apply
-  echo
-  show_info "Starting NixOS rebuild..."
-  echo
-  run_rebuild
-  wait_for_key
-}
-
-_tui_flow_fetch_index() {
-  clear; show_logo; show_section_header "Fetch Package Index"
-  _tui_status_bar; echo
-  show_menu_item '1' 'Depth 1  — top-level packages only  (~1 min)'
-  show_menu_item '2' 'Depth 2  — includes common sub-attrs  (~3 min)'
-  show_menu_item '3' 'Depth 3  — comprehensive  (~8 min)'
-  show_menu_item '4' 'Depth 4  — very deep'
-  show_menu_item '5' 'Depth 5  — complete, very slow'
-  show_menu_item '0' 'Back'
-  echo
-  show_input_prompt "Choose depth [0-5]"
-  local depth; read -r depth
-  [[ "$depth" == "0" || -z "$depth" ]] && return
-  [[ ! "$depth" =~ ^[1-5]$ ]] && { show_error "Invalid choice."; sleep 1; return; }
-
-  clear; show_logo; show_section_header "Fetching Index (depth $depth)"
-  printf '  This may take several minutes...\n\n'
-  build_nix_index "$depth" \
-    && show_success "Package index updated." \
-    || show_error "Index fetch failed."
-  wait_for_key
-}
-
-_tui_flow_gen_only() {
-  clear; show_logo; show_section_header "Generate Modules"
-  printf '  Generating Nix modules from lock file...\n\n'
-  generate_modules \
-    && show_success "Modules generated." \
-    || show_error "Generation failed."
-  wait_for_key
-}
-
-_tui_flow_view_status() {
-  clear; show_logo; show_section_header "Lock Status"
-  echo
-  _tui_status_bar; echo
-
-  if (( ${#TX_LOCK[@]} > 0 )); then
-    printf '  Packages currently in lock:\n\n'
-    printf '%s\n' "${!TX_LOCK[@]}" | sort | while IFS= read -r pkg; do
-      local mark=""
-      [[ -v TX_REMOVE[$pkg] ]] && mark="  \033[31m(-)\033[0m"
-      printf '    %-40s%b\n' "$pkg" "$mark"
-    done | head -60
-    local total=${#TX_LOCK[@]}
-    (( total > 60 )) && printf '  \033[2m... and %d more\033[0m\n' "$(( total - 60 ))"
-  else
-    printf '  (Lock is empty)\n'
-  fi
-
-  if (( ${#TX_ADD[@]} > 0 )); then
-    echo
-    printf '  \033[32mQueued to install:\033[0m\n'
-    printf '%s\n' "${!TX_ADD[@]}" | sort | while IFS= read -r pkg; do
-      printf '    \033[32m+ %s\033[0m\n' "$pkg"
-    done
-  fi
-  echo
-  wait_for_key
-}
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# Main Menu  —  entry point for `sudo nixorcist` (no args)
-# Resembles nmtui / Void Linux installer: arrow-key navigation, persistent
-# transaction state, back/forward through submenus.
-# ═══════════════════════════════════════════════════════════════════════════════
-
-main_menu() {
-  transaction_init
-
-  _TUI_ITEMS=(
-    "Install packages         add packages to install queue"
-    "Remove packages          mark packages for removal"
-    "Chant                    mixed +pkg -pkg tokens"
-    "Import from file         load package list from file"
-    ""
-    "Review & Cast Chant      preview all changes, then rebuild"
-    ""
-    "Fetch index              update the package search database"
-    "Generate modules         gen only (no rebuild)"
-    "View lock status         show all installed packages"
-    ""
-    "Exit"
-  )
-  _TUI_SEPS=(0 0 0 0 1 0 1 0 0 0 1 0)
-  _TUI_CUR=0
-
-  while true; do
-    _tui_menu "Nixorcist — WtfOS Package Sorcerer" || break
-
-    case $_TUI_CUR in
-      0)  _tui_flow_install     ;;
-      1)  _tui_flow_remove      ;;
-      2)  _tui_flow_chant       ;;
-      3)  _tui_flow_import      ;;
-      5)  _tui_flow_review      ;;
-      7)  _tui_flow_fetch_index ;;
-      8)  _tui_flow_gen_only    ;;
-      9)  _tui_flow_view_status ;;
-      11) break                 ;;
-    esac
-  done
-
-  transaction_cleanup
-  tput cnorm 2>/dev/null || true
-  clear
-  show_success "Exiting nixorcist."
-}

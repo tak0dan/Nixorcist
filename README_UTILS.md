@@ -1,87 +1,179 @@
-# utils.sh — Validation Cache & Package Search
+# README_UTILS.md
 
-Provides fast package validation (with per-session cache) and ranked
-proximity search against the nixpkgs index.
+## Overview
+The utils module provides core validation and package inspection utilities used across the entire nixorcist system. It bridges bash with Nix evaluation to check package existence, resolve attributes, and manage the package index.
 
----
+## Location
+`lib/utils.sh`
 
-## Validation Cache
+## Functions
 
-Location: `cache/pkg-validation.cache`
+### `get_index_file()`
+Returns the path to the cached nixpkgs index file.
 
-Format:
-```
-# rev:a3f2b1c4d5e6f7a8          ← nixpkgs store-path hash (16 chars)
-firefox=derivation
-python=skip
-python3Packages.pip=derivation
-```
-
-The rev line is compared against the current nixpkgs store path on every
-startup.  If the channel was updated, the whole cache is wiped and rebuilt.
-
-### is_derivation_cached PKG
-
-Returns `derivation` or `skip`, or falls through to `is_derivation` on a
-cache miss (then writes the result to cache).
-
-### is_derivation PKG
-
-Calls `nix eval nixpkgs#PKG --apply builtins.typeOf` and checks for
-`"derivation"`.  This is the slow path (~0.3–1s per package); only called
-on cache misses.
-
-### validation_cache_evict PKG
-
-Removes one entry from the cache.  Called automatically when a package
-causes a build failure, so the next rebuild re-validates it.
+**Returns:** Index file path
 
 ---
 
-## Package Search
+### `ensure_index()`
+Checks if the index exists; builds it if missing.
 
-### find_similar_packages QUERY
-
-Searches `cache/nixpkgs-index.txt` by **leaf-name proximity**.
-
-The index format is `attr.path|Short description`, one per line.
-The leaf is the last dot-component of the attribute path.
-
-Ranking:
-
-| Score | Condition |
-|-------|-----------|
-| 0 | leaf == query (exact) |
-| 1 | leaf starts with query |
-| 2 | leaf ends with query |
-| 3 | query is a whole word in leaf (hyphen/underscore boundary) |
-
-Anything that doesn't match any score is silently skipped — no
-"substring anywhere in the full path" noise.
-
-Results: up to 12, sorted by score then alphabetically, printed one per line.
-
-### get_index_file
-
-Returns the path to the nixpkgs index file (`cache/nixpkgs-index.txt`).
-
----
-
-## Token Validation
-
-### is_valid_token STR
-
-Checks that a token contains only safe characters (alphanumeric, `.`, `-`, `_`).
-Used by `import_from_file` before processing any user input.
-
-### resolve_entry_to_packages ENTRY OUT_ARRAY
-
-Expands attribute sets to their constituent packages.
-
+**Usage:**
 ```bash
-resolve_entry_to_packages "eclipses" pkgs_out
-# pkgs_out = (eclipses.eclipse-java eclipses.eclipse-cpp eclipses.eclipse-sdk ...)
+ensure_index  # Safe to call multiple times
 ```
 
-If the entry is a plain derivation it is returned as-is.
-If it is an attribute set, all children that are derivations are enumerated.
+---
+
+### `get_pkg_description(pkg)`
+Fetches the description for a package attribute.
+
+**Parameters:**
+- `$1` - Package name/attribute path
+
+**Returns:** Description string or error message
+
+**Usage:**
+```bash
+desc=$(get_pkg_description "firefox")
+echo "$desc"
+```
+
+---
+
+### `list_available_packages()`
+Lists all packages available in the current nixpkgs.
+
+**Returns:** Newline-separated list of package names
+
+**Usage:**
+```bash
+mapfile -t all_pkgs < <(list_available_packages)
+```
+
+---
+
+### `list_available_packages_lower()`
+Variant of above with lowercase conversion.
+
+**Returns:** Lowercase package names
+
+---
+
+### `purge_all_modules()`
+Removes all generated nixorcist modules and clears the lock file.
+
+**Usage:**
+```bash
+purge_all_modules
+```
+
+---
+
+### `is_derivation(pkg)`
+Checks if a package name resolves to a Nix derivation.
+
+**Parameters:**
+- `$1` - Package attribute path
+
+**Returns:** 0 (success) if derivation, 1 otherwise
+
+**Usage:**
+```bash
+if is_derivation "firefox"; then
+  echo "Valid package"
+fi
+```
+
+---
+
+### `is_attrset(pkg)`
+Checks if a package name is an attribute set (namespace) rather than a derivation.
+
+**Parameters:**
+- `$1` - Package attribute path
+
+**Returns:** 0 if attrset, 1 otherwise
+
+**Example:** `eclipses.eclipse-java` is an attrset
+
+---
+
+### `list_attrset_children(pkg)`
+Lists all derivative children of an attribute set.
+
+**Parameters:**
+- `$1` - Attribute set path
+
+**Returns:** Newline-separated list of child attributes
+
+**Usage:**
+```bash
+mapfile -t variants < <(list_attrset_children "eclipses")
+```
+
+---
+
+### `is_valid_token(token)`
+Validates that a token is a safe package identifier.
+
+**Parameters:**
+- `$1` - Token to validate
+
+**Returns:** 0 if valid, 1 otherwise
+
+**Allowed:** alphanumeric, dots, hyphens, underscores, plus
+
+---
+
+### `sanitize_token(token)`
+Cleans and normalizes a token (lowercase, trim whitespace).
+
+**Parameters:**
+- `$1` - Raw token
+
+**Returns:** Sanitized token
+
+---
+
+### `resolve_entry_to_packages(entry, out_array)`
+Expands a single entry (package or attrset) into a list of actual derivations.
+
+**Parameters:**
+- `$1` - Package or attrset name
+- `$2` - Name of array variable to populate
+
+**Returns:** 0 on success, 1 if no packages found
+
+**Usage:**
+```bash
+local -a packages
+if resolve_entry_to_packages "eclipses" packages; then
+  printf '%s\n' "${packages[@]}"
+fi
+```
+
+---
+
+## Performance Notes
+
+- Nix evaluation is cached via the index file
+- Index rebuilds only on first run or manual refresh
+- Package existence checks use fast Nix eval, not filesystem lookups
+- Attribute expansion is done in pure bash after resolution
+
+## Error Handling
+
+All functions that use Nix eval suppress stderr and return appropriate exit codes. Caller is responsible for checking return values.
+
+## Code of Conduct
+
+- All functions must be idempotent where applicable
+- Validation should happen early; fail fast
+- Use array name references (`local -n`) for complex returns
+- Quote all variable expansions
+- Document Nix eval expressions inline
+
+## Dependencies
+- `nix` eval command
+- GNU tools: `awk`, `grep`, `sed`

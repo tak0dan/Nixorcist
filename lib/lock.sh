@@ -1183,197 +1183,153 @@ remove_packages() {
 handle_missing_package() {
   local missing="$1"
   local mode="${2:-add}"
-  local index_file similar_pkgs count
-  index_file="$(get_index_file)"
-
+  local similar_pkgs count suggested
+  
+  show_section "Package Not Found: $missing"
+  
+  # Ensure index exists before searching
   ensure_index
-
-  # Build a ranked candidate list
-  similar_pkgs="$(find_similar_packages "$missing")"
-
-  echo
-  show_section "Package not found: '$missing'"
-
+  
+  # Find similar packages
+  similar_pkgs=$(find_similar_packages "$missing")
+  
   if [[ -z "$similar_pkgs" ]]; then
-    show_info "No close matches found in the index."
+    echo "  No similar packages found."
     echo
-    printf '  Enter an exact package name to use instead, or press Enter to skip:\n'
-    local manual
-    read -r manual
-    [[ -z "$manual" ]] && { show_item "⊘" "Skipped: $missing"; return 0; }
-    local suggested
-    suggested="$(sanitize_token "$manual")"
-    if [[ -n "$suggested" ]]; then
-      if [[ "$mode" == "add" ]]; then
-        TX_ADD["$suggested"]=1; unset "TX_REMOVE[$suggested]" 2>/dev/null || true
-      else
-        TX_REMOVE["$suggested"]=1; unset "TX_ADD[$suggested]" 2>/dev/null || true
-      fi
-      show_item "✓" "Added: $suggested"
-    fi
-    return 0
-  fi
-
-  # Show ranked candidates with descriptions
-  count="$(printf '%s\n' "$similar_pkgs" | wc -l)"
-  printf '  Closest matches (%d):\n\n' "$count"
-
-  local i=1 pkg desc
-  while IFS= read -r pkg; do
-    desc="$(awk -F'|' -v p="$pkg" '$1==p{sub(/^[^|]*\|/,""); print; exit}' "$index_file" 2>/dev/null)"
-    desc="${desc:-(no description)}"
-    desc="${desc:0:55}"
-    printf '    %2d) %-36s  %s\n' "$i" "$pkg" "$desc"
-    (( i++ ))
-  done <<< "$similar_pkgs"
-
-  echo
-  printf '     0) Skip\n'
-  printf '     b) Browse all packages in fzf\n'
-  echo
-
-  local choice chosen
-  while true; do
-    read -rp "  Select [0-${count}/b]: " choice
-    nixorcist_trace_selection "missing_package.choice.$missing" "$choice"
-
-    if [[ "$choice" == "0" ]]; then
-      show_item "⊘" "Skipped: $missing"
-      return 0
-    fi
-
-    if [[ "${choice,,}" == "b" ]]; then
-      chosen="$(awk -F'|' '{print $1}' "$index_file" | sort -u | fzf --multi \
-        --prompt="BROWSE > " \
-        --header="TAB=multi-select | ENTER=confirm | ESC=cancel" \
-        --preview "$(_fzf_pkg_preview_cmd)" || true)"
-      if [[ -n "$chosen" ]]; then
-        while IFS= read -r pkg; do
-          [[ -z "$pkg" ]] && continue
+    read -r -p "  Skip this package? [Y/n]: " choice
+    nixorcist_trace_selection "missing_package.skip_choice.$missing" "$choice"
+    case "${choice,,}" in
+      n) 
+        # User wants to browse all packages
+        suggested=$(awk -F'|' '{print $1}' "$(get_index_file)" | sort -u | fzf \
+          --prompt="BROWSE ALL PACKAGES > " \
+          --header="Type to filter | ENTER=select | ESC=cancel" \
+          --preview "$(_fzf_pkg_preview_cmd)" || true)
+        
+        if [[ -n "$suggested" ]]; then
           if [[ "$mode" == "add" ]]; then
-            TX_ADD["$pkg"]=1; unset "TX_REMOVE[$pkg]" 2>/dev/null || true
+            TX_ADD["$suggested"]=1
+            unset TX_REMOVE["$suggested"] 2>/dev/null || true
           else
-            TX_REMOVE["$pkg"]=1; unset "TX_ADD[$pkg]" 2>/dev/null || true
+            TX_REMOVE["$suggested"]=1
+            unset TX_ADD["$suggested"] 2>/dev/null || true
           fi
-        done <<< "$chosen"
-        show_item "✓" "Selected from browse"
+          show_item "✓" "Selected: $suggested"
+          return 0
+        fi
+        return 1
+        ;;
+      *) 
+        return 0 
+        ;;
+    esac
+  fi
+  
+  # Count matches
+  count=$(echo "$similar_pkgs" | wc -l)
+  echo "  Found $count similar packages."
+  echo
+  echo "  What would you like to do?"
+  echo "    [1] Select Multiple - Choose any packages from matches"
+  echo "    [2] First Match     - Use the first matching package"
+  echo "    [3] Browse All      - Browse all packages in fzf"
+  echo "    [4] Skip            - Skip this package"
+  echo
+  read -r -p "  Choose [1-4]: " choice
+  nixorcist_trace_selection "missing_package.resolve_choice.$missing" "$choice"
+  
+  case "$choice" in
+    1)
+      # Show fzf with similar packages
+      suggested=$(echo "$similar_pkgs" | fzf --multi \
+        --prompt="SELECT FROM MATCHES > " \
+        --header="TAB=multi | ENTER=confirm | ESC=cancel" \
+        --preview "$(_fzf_pkg_preview_cmd)" || true)
+      
+      if [[ -n "$suggested" ]]; then
+        local pkg_name
+        while IFS= read -r pkg_name; do
+          [[ -z "$pkg_name" ]] && continue
+          if [[ "$mode" == "add" ]]; then
+            TX_ADD["$pkg_name"]=1
+            unset TX_REMOVE["$pkg_name"] 2>/dev/null || true
+          else
+            TX_REMOVE["$pkg_name"]=1
+            unset TX_ADD["$pkg_name"] 2>/dev/null || true
+          fi
+        done <<< "$suggested"
+        show_item "✓" "Selected from similar packages"
         return 0
       fi
-      continue
-    fi
-
-    if [[ "$choice" =~ ^[0-9]+$ ]] && (( choice >= 1 && choice <= count )); then
-      chosen="$(printf '%s\n' "$similar_pkgs" | sed -n "${choice}p")"
-      if [[ "$mode" == "add" ]]; then
-        TX_ADD["$chosen"]=1; unset "TX_REMOVE[$chosen]" 2>/dev/null || true
-      else
-        TX_REMOVE["$chosen"]=1; unset "TX_ADD[$chosen]" 2>/dev/null || true
+      return 1
+      ;;
+    2)
+      # Use first match
+      suggested=$(echo "$similar_pkgs" | head -1)
+      if [[ -n "$suggested" ]]; then
+        if [[ "$mode" == "add" ]]; then
+          TX_ADD["$suggested"]=1
+          unset TX_REMOVE["$suggested"] 2>/dev/null || true
+        else
+          TX_REMOVE["$suggested"]=1
+          unset TX_ADD["$suggested"] 2>/dev/null || true
+        fi
+        show_item "✓" "Selected closest match: $suggested"
+        return 0
       fi
-      show_item "✓" "Selected: $chosen"
+      return 1
+      ;;
+    3)
+      # Browse all packages
+      suggested=$(awk -F'|' '{print $1}' "$(get_index_file)" | sort -u | fzf --multi \
+        --prompt="BROWSE ALL PACKAGES > " \
+        --header="Type to filter | TAB=multi | ENTER=confirm | ESC=cancel" \
+        --preview "$(_fzf_pkg_preview_cmd)" || true)
+      
+      if [[ -n "$suggested" ]]; then
+        while IFS= read -r pkg_name; do
+          [[ -z "$pkg_name" ]] && continue
+          if [[ "$mode" == "add" ]]; then
+            TX_ADD["$pkg_name"]=1
+            unset TX_REMOVE["$pkg_name"] 2>/dev/null || true
+          else
+            TX_REMOVE["$pkg_name"]=1
+            unset TX_ADD["$pkg_name"] 2>/dev/null || true
+          fi
+        done <<< "$suggested"
+        show_item "✓" "Selected from all packages"
+        return 0
+      fi
+      return 1
+      ;;
+    4)
+      show_item "⊘" "Skipped: $missing"
       return 0
-    fi
-
-    show_error "Enter a number between 0 and $count, or 'b' to browse."
-  done
+      ;;
+    *)
+      show_error "Invalid choice"
+      return 1
+      ;;
+  esac
 }
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# Core pipeline — the execution heart of every package change.
-#
-# Caller must have called transaction_init() and populated TX_ADD / TX_REMOVE.
-# Order:
-#   1. Delete .nix modules for TX_REMOVE  (BEFORE anything else)
-#   2. Generate .nix modules for TX_ADD   (without touching lock)
-#   3. Regenerate hub                     (reflects both changes atomically)
-#   4. Apply lock changes                 (commit TX_ADD adds, TX_REMOVE removes)
-#
-# Optionally runs nixos-rebuild at the end when $1 == "--rebuild".
-# ═══════════════════════════════════════════════════════════════════════════════
-
-nixorcist_pipeline() {
-  local do_rebuild=0
-  [[ "${1:-}" == "--rebuild" ]] && do_rebuild=1
-
-  local add_n=${#TX_ADD[@]} rem_n=${#TX_REMOVE[@]}
-
-  if (( add_n == 0 && rem_n == 0 )); then
-    show_info "Nothing to do — transaction is empty."
-    return 0
-  fi
-
-  show_divider
-  if (( rem_n > 0 )); then
-    printf '  To remove (%d):\n' "$rem_n"
-    printf '%s\n' "${!TX_REMOVE[@]}" | sort | while IFS= read -r p; do printf '    \033[31m- %s\033[0m\n' "$p"; done
-  fi
-  if (( add_n > 0 )); then
-    printf '  To install (%d):\n' "$add_n"
-    printf '%s\n' "${!TX_ADD[@]}" | sort | while IFS= read -r p; do printf '    \033[32m+ %s\033[0m\n' "$p"; done
-  fi
-  show_divider
-
-  # ── Phase 1: Remove .nix files for packages being removed ─────────────────
-  if (( rem_n > 0 )); then
-    show_info "Phase 1/4: Removing modules for deleted packages"
-    remove_staged_modules || true
-  fi
-
-  # ── Phase 2: Generate .nix files for packages being added ─────────────────
-  if (( add_n > 0 )); then
-    show_info "Phase 2/4: Generating modules for new packages"
-    local pkg
-    for pkg in "${!TX_ADD[@]}"; do
-      generate_module_for_pkg "$pkg" || true
-    done
-  fi
-
-  # ── Phase 3: Regenerate hub ───────────────────────────────────────────────
-  show_info "Phase 3/4: Regenerating hub"
-  regenerate_hub
-
-  # ── Phase 4: Apply lock changes ───────────────────────────────────────────
-  show_info "Phase 4/4: Updating lock file"
-  transaction_apply
-
-  show_success "Transaction applied."
-
-  # ── Optional rebuild ──────────────────────────────────────────────────────
-  if (( do_rebuild )); then
-    echo
-    show_info "Starting NixOS rebuild..."
-    echo
-    run_rebuild
-  else
-    echo
-    show_info "Run 'nixorcist rebuild' to apply changes to the running system."
-  fi
-}
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# import_from_file — the base command; all others delegate here.
-#
-# File format: one package per line (or comma-separated).
-# Lines may use +/- prefixes. No prefix = install.
-# Asks before applying; passes --rebuild if user wants full rebuild.
-# ═══════════════════════════════════════════════════════════════════════════════
 
 import_from_file() {
   local file="$1"
-  local _silent="${2:-}"   # pass "--silent" to skip the preview prompt
+  local route="${2:-import}"
+  local normalized token review_answer run_all_answer
+  local mode="add"
+  local rest segment sign
 
   if [[ -z "$file" || ! -f "$file" ]]; then
-    show_error "Provide a valid text file."
+    show_error "Provide a valid text file"
     return 1
   fi
 
   ensure_index
   transaction_init
 
-  local normalized token mode="add" rest segment sign
-  normalized="$(tr ',\n\t ' '\n\n\n\n' < "$file")"
-
-  while IFS= read -r -u 3 token; do
+  normalized=$(tr ',\n\t ' '\n\n\n\n' < "$file")
+  while IFS= read -r token; do
     token="$(sanitize_token "$token")"
     [[ -z "$token" ]] && continue
 
@@ -1398,62 +1354,105 @@ import_from_file() {
       [[ -z "$segment" ]] && continue
 
       if [[ "$mode" == "add" ]]; then
-        if ! transaction_expand_and_stage add "$segment"; then
-          handle_missing_package "$segment" "add" || show_item "?" "Unresolved: $segment"
+        if transaction_expand_and_stage add "$segment"; then
+          continue
         fi
+        handle_missing_package "$segment" || show_item "?" "Unresolved: $segment"
       else
-        if ! transaction_expand_and_stage remove "$segment"; then
-          if is_valid_token "$segment"; then
-            TX_REMOVE["$segment"]=1
-            unset "TX_ADD[$segment]" 2>/dev/null || true
-            show_item "-" "Staged removal: $segment"
-          else
-            show_item "?" "Unresolved remove token: $segment"
-          fi
+        if transaction_expand_and_stage remove "$segment"; then
+          continue
+        fi
+        if is_valid_token "$segment"; then
+          TX_REMOVE["$segment"]=1
+          unset TX_ADD["$segment"] 2>/dev/null || true
+          show_item "-" "Staged raw removal: $segment"
+        else
+          show_item "?" "Unresolved remove token: $segment"
         fi
       fi
     done
-  done 3<<< "$normalized"
+  done <<< "$normalized"
 
   if [[ "${NIXORCIST_IMPORT_AUTO:-0}" == "1" ]]; then
-    nixorcist_pipeline
+    transaction_apply
+    if [[ ${#TX_REMOVE[@]} -gt 0 ]]; then
+      show_info "Removing modules for deleted packages"
+      remove_staged_modules
+      regenerate_hub
+    fi
     transaction_cleanup
+    show_info "Import complete ($route)"
     return 0
   fi
 
-  if [[ "$_silent" != "--silent" ]]; then
-    echo
-    local answer
-    read -rp "  Apply transaction? [Y/n/r] (y=apply, n=cancel, r=apply+rebuild): " answer
-    nixorcist_trace_selection "import.apply_confirm" "$answer"
-    case "${answer,,}" in
-      n) show_warning "Import cancelled."; transaction_cleanup; return 1 ;;
-      r) nixorcist_pipeline --rebuild ;;
-      *) nixorcist_pipeline ;;
-    esac
-  else
-    nixorcist_pipeline
+  show_divider
+  read -r -p "  Review transaction? [Y/n]: " review_answer
+  nixorcist_trace_selection "import.review_transaction" "$review_answer"
+  case "${review_answer,,}" in
+    n)
+      transaction_apply
+      ;;
+    *)
+      transaction_menu_loop || { transaction_cleanup; return 1; }
+      ;;
+  esac
+
+  if [[ ${#TX_REMOVE[@]} -gt 0 ]]; then
+    show_info "Removing modules for deleted packages"
+    remove_staged_modules
+    regenerate_hub
   fi
 
   transaction_cleanup
+
+  echo
+  read -r -p "  Run full pipeline? [y/N]: " run_all_answer
+  nixorcist_trace_selection "import.run_full_pipeline" "$run_all_answer"
+  case "${run_all_answer,,}" in
+    y)
+      show_header "Running full pipeline"
+      run_rebuild
+      ;;
+    *)
+      show_info "Import complete (changes saved to lock file)"
+      show_info "Run 'nixorcist rebuild' to apply changes"
+      ;;
+  esac
 }
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# chant_from_args — writes tokens to a temp file, delegates to import_from_file.
-# install_from_args — chant with only + tokens.
-# delete_from_args  — chant with only - tokens.
-# ═══════════════════════════════════════════════════════════════════════════════
+module_filename_for_pkg() {
+  local pkg="$1"
+  echo "$pkg" | tr '/' '-' | tr ' ' '_' | tr ':' '_'
+}
 
-chant_from_args() {
-  if [[ $# -eq 0 ]]; then
-    show_error "chant requires at least one token (e.g. +bat -nano)"
-    return 1
-  fi
+remove_staged_modules() {
+  local removed_count=0
+  local pkg file_name
+  
+  for pkg in "${!TX_REMOVE[@]}"; do
+    file_name="$(module_filename_for_pkg "$pkg")"
+    if [[ -f "$MODULES_DIR/$file_name.nix" ]] && grep -qF "$NIXORCIST_MARKER" "$MODULES_DIR/$file_name.nix" 2>/dev/null; then
+      rm -f "$MODULES_DIR/$file_name.nix"
+      show_item "-" "Removed module: $file_name.nix"
+      ((removed_count++))
+    fi
+  done
+  
+  [[ $removed_count -gt 0 ]] && return 0
+  return 1
+}
 
-  local tmp
-  tmp="$(mktemp /tmp/nixorcist-chant.XXXXXX)"
+parse_chant_args() {
+  local -n out_add_ref=$1
+  local -n out_remove_ref=$2
+  shift 2
 
-  local mode="add" raw token rest segment sign
+  out_add_ref=()
+  out_remove_ref=()
+
+  local mode="add"
+  local raw token rest segment sign
+
   for raw in "$@"; do
     raw="${raw//,/ }"
     for token in $raw; do
@@ -1479,45 +1478,194 @@ chant_from_args() {
         segment="$(sanitize_token "$segment")"
         [[ -z "$segment" ]] && continue
 
+        if ! is_valid_token "$segment"; then
+          show_error "Invalid token: $segment"
+          continue
+        fi
+
         if [[ "$mode" == "add" ]]; then
-          printf '+%s\n' "$segment"
+          out_add_ref+=("$segment")
         else
-          printf -- '-%s\n' "$segment"
+          out_remove_ref+=("$segment")
         fi
       done
     done
-  done > "$tmp"
+  done
+}
 
-  import_from_file "$tmp"
-  local rc=$?
-  rm -f "$tmp"
-  return $rc
+preplist_file_path() {
+  local target_user target_home
+  target_user="${SUDO_USER:-${USER:-}}"
+  target_home="$(getent passwd "$target_user" 2>/dev/null | cut -d: -f6)"
+  if [[ -z "$target_home" ]]; then
+    target_home="${HOME:-/tmp}"
+  fi
+  printf '%s\n' "$target_home/.cache/nixorcist/preplist.query"
+}
+
+append_current_query_to_preplist() {
+  local preplist_file
+  preplist_file="$(preplist_file_path)"
+  mkdir -p "$(dirname "$preplist_file")"
+
+  {
+    printf '# Appended on %s\n' "$(date '+%Y-%m-%d %H:%M:%S')"
+    printf '%s\n' "${!TX_QUERY_ADD[@]}" | sed '/^[[:space:]]*$/d' | sort -u | sed 's/^/+/'
+    printf '%s\n' "${!TX_QUERY_REMOVE[@]}" | sed '/^[[:space:]]*$/d' | sort -u | sed 's/^/-/'
+    echo
+  } >> "$preplist_file"
+
+  show_success "Query appended to preplist: $preplist_file"
+}
+
+confirm_and_apply_query_from_args() {
+  local action_label="$1"
+  local answer first_char
+
+  transaction_stage_query
+
+  while true; do
+    clear
+    show_logo
+    show_section_header "$action_label Query Preview"
+    transaction_preview_query
+    show_section_header "Resolved Packages"
+    transaction_preview
+
+    echo "  Press ENTER to accept the default option."
+    echo "  Default is [Y]es."
+    read -r -p "  INSTALL? [Y/n/a] (y=yes, n=no, a=append, p=preview): " answer
+    nixorcist_trace_selection "args.install_confirm.$action_label" "$answer"
+
+    if [[ -z "$answer" ]]; then
+      first_char="y"
+    else
+      first_char="${answer:0:1}"
+      first_char="${first_char,,}"
+    fi
+
+    case "$first_char" in
+      y)
+        transaction_apply
+        if [[ ${#TX_REMOVE[@]} -gt 0 ]]; then
+          show_info "Removing modules for deleted packages"
+          remove_staged_modules || true
+          regenerate_hub
+        fi
+        show_success "$action_label applied"
+        return 0
+        ;;
+      n)
+        show_warning "$action_label cancelled"
+        return 1
+        ;;
+      a)
+        append_current_query_to_preplist
+        return 0
+        ;;
+      p)
+        # Preview already shown; loop for decision.
+        ;;
+      *)
+        show_error "Invalid choice. Use Y, N, A, or P."
+        ;;
+    esac
+  done
 }
 
 install_from_args() {
   if [[ $# -eq 0 ]]; then
-    show_error "install requires at least one package name"
+    show_error "install requires at least one package"
     return 1
   fi
-  # Prefix all args with + and delegate to chant
-  local prefixed=()
-  local arg
-  for arg in "$@"; do
-    prefixed+=("+${arg#+}")   # strip accidental + then re-add
+
+  local token
+  if ! ensure_index 1; then
+    show_warning 'Install cancelled: package index is required but fetch was declined.'
+    return 1
+  fi
+  transaction_init
+
+  for token in "$@"; do
+    transaction_add_to_query add "$token" || true
   done
-  chant_from_args "${prefixed[@]}"
+
+  if ! transaction_has_query; then
+    show_error "No valid packages to add"
+    transaction_cleanup
+    return 1
+  fi
+
+  if confirm_and_apply_query_from_args "Install"; then
+    transaction_cleanup
+    return 0
+  fi
+
+  transaction_cleanup
+  return 1
 }
 
 delete_from_args() {
   if [[ $# -eq 0 ]]; then
-    show_error "delete requires at least one package name"
+    show_error "delete requires at least one package"
     return 1
   fi
-  # Prefix all args with - and delegate to chant
-  local prefixed=()
-  local arg
-  for arg in "$@"; do
-    prefixed+=("-${arg#-}")   # strip accidental - then re-add
+
+  local token
+  ensure_index
+  transaction_init
+
+  for token in "$@"; do
+    transaction_add_to_query remove "$token" || true
   done
-  chant_from_args "${prefixed[@]}"
+
+  if ! transaction_has_query; then
+    show_error "No valid packages to remove"
+    transaction_cleanup
+    return 1
+  fi
+
+  if confirm_and_apply_query_from_args "Delete"; then
+    transaction_cleanup
+    return 0
+  fi
+
+  transaction_cleanup
+  return 1
+}
+
+chant_from_args() {
+  if [[ $# -eq 0 ]]; then
+    show_error "chant requires package arguments"
+    return 1
+  fi
+
+  local add_tokens=()
+  local remove_tokens=()
+  local token
+
+  ensure_index
+  transaction_init
+  parse_chant_args add_tokens remove_tokens "$@"
+
+  for token in "${add_tokens[@]}"; do
+    transaction_add_to_query add "$token" || true
+  done
+  for token in "${remove_tokens[@]}"; do
+    transaction_add_to_query remove "$token" || true
+  done
+
+  if ! transaction_has_query; then
+    show_error "No valid chant tokens"
+    transaction_cleanup
+    return 1
+  fi
+
+  if confirm_and_apply_query_from_args "Chant"; then
+    transaction_cleanup
+    return 0
+  fi
+
+  transaction_cleanup
+  return 1
 }

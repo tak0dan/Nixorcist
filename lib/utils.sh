@@ -333,89 +333,6 @@ is_derivation() {
   index_has_exact_attr "$pkg" && ! index_has_children "$pkg"
 }
 
-# ── Validation cache ─────────────────────────────────────────────────────────
-# Persistent cache of is_derivation() results keyed to a nixpkgs channel rev.
-# Cache file: $ROOT/cache/pkg-validation.cache
-# Format:   first line "# rev:<16-char-hash>", then "<pkg>=derivation|skip"
-# When nixpkgs changes the rev changes and the whole cache is wiped.
-
-_VALIDATION_CACHE_FILE="${ROOT:-/etc/nixos/nixorcist}/cache/pkg-validation.cache"
-_VALIDATION_CACHE_LOADED=0
-declare -A _VALIDATION_CACHE=()
-
-_nixpkgs_cache_rev() {
-  nix eval --raw --impure --expr 'builtins.toString <nixpkgs>' 2>/dev/null \
-    | md5sum | cut -c1-16 || echo "unknown"
-}
-
-_validation_cache_load() {
-  [[ "$_VALIDATION_CACHE_LOADED" -eq 1 ]] && return 0
-  _VALIDATION_CACHE_LOADED=1
-  [[ -f "$_VALIDATION_CACHE_FILE" ]] || return 0
-
-  local current_rev stored_rev
-  current_rev="$(_nixpkgs_cache_rev)"
-  stored_rev="$(head -n1 "$_VALIDATION_CACHE_FILE" 2>/dev/null | sed 's/^# rev://')"
-
-  if [[ "$current_rev" != "$stored_rev" ]]; then
-    # nixpkgs changed — wipe and reinitialise
-    printf '# rev:%s\n' "$current_rev" > "$_VALIDATION_CACHE_FILE" 2>/dev/null || true
-    return 0
-  fi
-
-  local line pkg kind
-  while IFS='=' read -r pkg kind; do
-    [[ "$pkg" == \#* || -z "$pkg" ]] && continue
-    _VALIDATION_CACHE["$pkg"]="$kind"
-  done < "$_VALIDATION_CACHE_FILE"
-}
-
-_validation_cache_ensure_header() {
-  [[ -f "$_VALIDATION_CACHE_FILE" ]] && return 0
-  local rev
-  rev="$(_nixpkgs_cache_rev)"
-  printf '# rev:%s\n' "$rev" > "$_VALIDATION_CACHE_FILE" 2>/dev/null || true
-}
-
-_validation_cache_write() {
-  local pkg="$1" kind="$2"
-  _VALIDATION_CACHE["$pkg"]="$kind"
-  printf '%s=%s\n' "$pkg" "$kind" >> "$_VALIDATION_CACHE_FILE" 2>/dev/null || true
-}
-
-is_derivation_cached() {
-  local pkg="$1"
-  _validation_cache_load
-  _validation_cache_ensure_header
-
-  if [[ -v _VALIDATION_CACHE["$pkg"] ]]; then
-    [[ "${_VALIDATION_CACHE[$pkg]}" == "derivation" ]] && return 0
-    return 1
-  fi
-
-  # Cache miss — perform full check
-  if is_derivation "$pkg"; then
-    _validation_cache_write "$pkg" "derivation"
-    return 0
-  else
-    _validation_cache_write "$pkg" "skip"
-    return 1
-  fi
-}
-
-# Remove a single package from the persistent validation cache (called on build failure).
-validation_cache_evict() {
-  local pkg="$1"
-  unset "_VALIDATION_CACHE[$pkg]" 2>/dev/null || true
-  if [[ -f "$_VALIDATION_CACHE_FILE" ]]; then
-    local tmp
-    tmp="$(mktemp)"
-    grep -v "^${pkg}=" "$_VALIDATION_CACHE_FILE" > "$tmp" 2>/dev/null || true
-    mv "$tmp" "$_VALIDATION_CACHE_FILE" 2>/dev/null || true
-  fi
-}
-# ─────────────────────────────────────────────────────────────────────────────
-
 is_attrset() {
   local pkg="$1"
   local flake_kind=""
@@ -547,38 +464,6 @@ find_similar_packages() {
   local query="$1"
   local index_file
   index_file="$(get_index_file)"
-  [[ -f "$index_file" ]] || return 1
 
-  # Rank candidates by how closely the LEAF NAME matches the query.
-  # The leaf is the last dot-separated component of the attr path.
-  # Scores (lower = better):
-  #   0 – leaf equals query exactly            (pip → pip, python3Packages.pip)
-  #   1 – leaf starts with query               (pip → pipx, pip-tools)
-  #   2 – leaf ends with query                 (pip → python-pip)
-  #   3 – query is a whole word in leaf        (pip → get-pip, install_pip)
-  # Anything else is skipped — no "contains anywhere" noise.
-  awk -F'|' -v q="$query" '
-    BEGIN { ql = tolower(q) }
-    {
-      path = $1
-      n = split(path, parts, ".")
-      leaf = tolower(parts[n])
-
-      if (leaf == ql) {
-        score = 0
-      } else if (substr(leaf, 1, length(ql)) == ql) {
-        score = 1
-      } else if (substr(leaf, length(leaf) - length(ql) + 1) == ql) {
-        score = 2
-      } else if (leaf ~ ("(^|[-_])" ql "($|[-_])")) {
-        score = 3
-      } else {
-        next
-      }
-      printf "%d|%s\n", score, path
-    }
-  ' "$index_file" \
-    | sort -t'|' -k1,1n -k2,2 \
-    | cut -d'|' -f2 \
-    | head -12
+  awk -F'|' -v q="$query" 'tolower($1) ~ tolower(q) {print $1}' "$index_file" 2>/dev/null | sort -u | head -30
 }
