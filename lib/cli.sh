@@ -393,9 +393,9 @@ declare -gi _TUI_OFFSET=0
 # Print transaction status bar (requires TX_LOCK / TX_ADD / TX_REMOVE globals)
 _tui_status_bar() {
   local lock_n add_n rem_n
-  lock_n="${#TX_LOCK[@]:-0}"
-  add_n="${#TX_ADD[@]:-0}"
-  rem_n="${#TX_REMOVE[@]:-0}"
+  lock_n="${#TX_LOCK[@]}"
+  add_n="${#TX_ADD[@]}"
+  rem_n="${#TX_REMOVE[@]}"
   printf '  Lock: %d packages' "$lock_n"
   (( add_n > 0 )) && printf '  \033[1;32m  +%d to install\033[0m' "$add_n"
   (( rem_n > 0 )) && printf '  \033[1;31m  -%d to remove\033[0m'  "$rem_n"
