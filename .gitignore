@@ -1,0 +1,8 @@
+cache/
+nixorcist-old/
+generated/.modules/
+generated/all-packages.nix
+nixorcist-trace.txt
+dev_test_harness.sh
+DEVELOPMENT_LOGS.txt
+Notes_for_project/
