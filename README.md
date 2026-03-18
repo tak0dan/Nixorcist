@@ -35,7 +35,7 @@ A beautiful, modular Bash framework for managing NixOS packages declaratively th
 - **Attribute Set Expansion** - Automatically expand package namespaces to concrete derivations
 - **Transaction Engine** - Stage, preview, and apply package changes atomically
 - **Module Generation** - Automatic creation of Nix modules from lock file
-- **Visual CLI** - Beautiful ASCII logo, icons, and formatted output
+- **Visual CLI** - Interractive CLI
 - **Safe Rebuilds** - Staging, validation, and cleanup of NixOS changes
 - **Modular Architecture** - Separated concerns with pure bash libraries
 
