@@ -318,8 +318,7 @@ To improve nixorcist:
 
 ## License
 
-See project root for license information.
-
+MIT
 ## Support
 
 - Check module README files (README_*.md) for detailed function documentation
