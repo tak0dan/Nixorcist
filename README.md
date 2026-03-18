@@ -44,11 +44,14 @@ A beautiful, modular Bash framework for managing NixOS packages declaratively th
 ### Installation (Fresh NixOS)
 
 ```bash
-# Automated setup (recommended)
-cd WtfOS/NixOS
-sudo bash install.sh
+# Clone Nixorcist to /etc/nixos/nixorcist
+git clone https://github.com/tak0dan/Nixorcist.git /etc/nixos/nixorcist
 
-# Or follow manual steps in INSTALL.md
+# Follow the detailed setup in INSTALL.md:
+# - Enable flakes in configuration.nix
+# - Add nixorcist hub import to configuration.nix
+# - Bootstrap with: sudo nixorcist gen && sudo nixorcist hub
+# - Build index: sudo nixorcist refresh-index
 ```
 
 ### Basic Usage
