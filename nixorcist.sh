@@ -23,7 +23,7 @@ prepare_dirs
 source "$ROOT/lib/cli.sh"
 
 # Load all libraries
-for lib in utils lock gen hub rebuild index; do
+for lib in utils lock gen hub rebuild index merge; do
   source "$ROOT/lib/$lib.sh"
 done
 
@@ -121,6 +121,15 @@ main() {
       regenerate_hub && \
       run_rebuild && \
       show_success "Full pipeline completed"
+      ;;
+    merge)
+      if [[ -z "${2:-}" ]]; then
+        show_error "merge requires a name argument"
+        echo "  Usage: nixorcist merge <name>"
+        return 1
+      fi
+      show_header "Merging All Packages"
+      merge_packages "$2"
       ;;
     help|-h|--help)
       show_logo
